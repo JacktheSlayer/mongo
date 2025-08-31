@@ -1,0 +1,96 @@
+.dashboard-container {
+  max-width: 1000px;
+  margin: 30px auto;
+  padding: 20px;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #333;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.dashboard-header h1 {
+  font-size: 24px;
+  color: #2c3e50;
+}
+
+.dashboard-header button {
+  padding: 8px 16px;
+  background: #e74c3c;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.dashboard-header button:hover {
+  background: #c0392b;
+}
+
+.group-section {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.group-section input {
+  padding: 10px;
+  width: 220px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  margin-right: 10px;
+  font-size: 14px;
+}
+
+.group-section button {
+  padding: 10px 15px;
+  margin: 5px;
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.group-section button:hover {
+  background: #2980b9;
+}
+
+.group-info {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.group-info h2 {
+  color: #2c3e50;
+  margin-bottom: 10px;
+}
+
+.group-info button {
+  padding: 10px 20px;
+  background: #27ae60;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.group-info button:hover {
+  background: #1e8449;
+}
+
+.map-container {
+  border: 2px solid #ddd;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
