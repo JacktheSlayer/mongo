@@ -1,9 +1,6 @@
 .dashboard-container {
-  max-width: 1000px;
-  margin: 30px auto;
   padding: 20px;
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  color: #333;
+  font-family: Arial, sans-serif;
 }
 
 .dashboard-header {
@@ -14,83 +11,82 @@
 }
 
 .dashboard-header h1 {
-  font-size: 24px;
-  color: #2c3e50;
+  margin: 0;
 }
 
 .dashboard-header button {
-  padding: 8px 16px;
-  background: #e74c3c;
-  border: none;
-  border-radius: 6px;
+  background: #ff4b5c;
   color: white;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 14px;
-  transition: background 0.2s;
 }
 
 .dashboard-header button:hover {
-  background: #c0392b;
+  background: #d43f4f;
 }
 
 .group-section {
-  text-align: center;
+  display: flex;
+  gap: 10px;
   margin-bottom: 20px;
 }
 
 .group-section input {
-  padding: 10px;
-  width: 220px;
+  padding: 8px;
   border: 1px solid #ccc;
   border-radius: 6px;
-  margin-right: 10px;
-  font-size: 14px;
 }
 
 .group-section button {
-  padding: 10px 15px;
-  margin: 5px;
-  background: #3498db;
+  background: #4cafef;
   color: white;
   border: none;
+  padding: 8px 14px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 14px;
-  transition: background 0.2s;
-}
-
-.group-section button:hover {
-  background: #2980b9;
 }
 
 .group-info {
-  text-align: center;
-  margin-bottom: 20px;
-}
-
-.group-info h2 {
-  color: #2c3e50;
-  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
 }
 
 .group-info button {
-  padding: 10px 20px;
-  background: #27ae60;
-  border: none;
-  border-radius: 6px;
+  background: #4cafef;
   color: white;
-  font-size: 14px;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background 0.2s;
 }
 
-.group-info button:hover {
-  background: #1e8449;
+.member-table {
+  margin-bottom: 20px;
 }
 
-.map-container {
-  border: 2px solid #ddd;
-  border-radius: 10px;
-  overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+.member-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.member-table th,
+.member-table td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: center;
+}
+
+.member-table th {
+  background: #f4f4f4;
+}
+
+.color-tag {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
 }
