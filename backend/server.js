@@ -107,28 +107,85 @@ app.post("/api/group/join", authMiddleware, async (req, res) => {
 });
 
 // -- Location APIs --
+app.get("/api/location/:groupCode", authMiddleware, async (req, res) => {
+  const { groupCode } = req.params;
+  const group = await Group.findOne({ code: groupCode });
+  if (!group) return res.status(404).send("Group not found");
 
+  const locations = await Location.find({ group: group._id })
+    .populate("user", "username");
+
+  res.json(
+    locations.map((l) => ({
+      userId: l.user._id,
+      username: l.user.username,
+      lat: l.location.coordinates[1],
+      lng: l.location.coordinates[0],
+      speed: l.speed,
+    }))
+  );
+});
+
+// -- Location APIs --
 app.post("/api/location/update", authMiddleware, async (req, res) => {
   const { groupId, lat, lng, speed } = req.body;
-  if (!groupId || lat === undefined || lng === undefined)
-    return res.status(400).send("Missing location data");
-  await Location.findOneAndUpdate(
-    { user: req.userId, group: groupId },
-    {
-      location: { type: "Point", coordinates: [lng, lat] },
+  console.log("[API] /api/location/update hit - payload:", { groupId, lat, lng, speed, userId: req.userId });
+
+  if (!groupId || lat === undefined || lng === undefined) {
+    console.log("[API] Missing data in /api/location/update");
+    return res.status(400).json({ error: "Missing location data" });
+  }
+
+  try {
+    const group = await Group.findById(groupId);
+    if (!group) {
+      console.log("[API] Group not found for ID:", groupId);
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    const updatedLocation = await Location.findOneAndUpdate(
+      { user: req.userId, group: groupId },
+      {
+        location: { type: "Point", coordinates: [lng, lat] },
+        speed,
+        lastUpdated: new Date(),
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).populate("user", "username");
+
+    const userId = updatedLocation.user?._id || req.userId;
+    const username = updatedLocation.user?.username || "unknown";
+
+    console.log(`[API] Saved location for user ${username} (${userId}). Broadcasting to room: ${group.code}`);
+
+    io.to(group.code).emit("locationUpdate", {
+      userId,
+      username,
+      lat,
+      lng,
       speed,
-      lastUpdated: new Date(),
-    },
-    { upsert: true, new: true }
-  );
-  res.sendStatus(200);
+      lastUpdated: updatedLocation.lastUpdated,
+    });
+
+    console.log("[API] Broadcast complete");
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("[API] Error in /api/location/update:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // -- Socket.io Real-time --
-
 io.on("connection", (socket) => {
+  console.log("[IO] socket connected:", socket.id);
+
   socket.on("joinGroup", (groupCode) => {
+    console.log(`[IO] socket ${socket.id} joining room ${groupCode}`);
     socket.join(groupCode);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("[IO] socket disconnected:", socket.id);
   });
 });
 
