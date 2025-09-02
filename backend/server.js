@@ -6,76 +6,55 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-const JWT_SECRET = "your_jwt_secret"; // set strong secret in production
+const JWT_SECRET =
+  "e3ff5f077839c1331b1d893a728246685cb7dba9e3a77bffe7d52eaccf660988";
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: "*" } });
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB 'maps' database
+// MongoDB connection
 mongoose.connect("mongodb://localhost:27017/maps", {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
 
-// -- Mongoose Schemas --
-
-// User schema
+// MongoDB Schemas and Models
 const UserSchema = new mongoose.Schema({
   username: { type: String, unique: true },
   passwordHash: String,
 });
 const User = mongoose.model("User", UserSchema);
 
-// Group schema
 const GroupSchema = new mongoose.Schema({
   name: String,
-  code: { type: String, unique: true }, // shareable unique code
+  code: { type: String, unique: true },
   members: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 });
 const Group = mongoose.model("Group", GroupSchema);
 
-// Location schema - Use collection "map"
 const LocationSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   group: { type: mongoose.Schema.Types.ObjectId, ref: "Group" },
   location: {
     type: { type: String, enum: ["Point"], required: true },
-    coordinates: { type: [Number], required: true }, // [lng, lat]
+    coordinates: { type: [Number], required: true },
   },
   speed: Number,
   lastUpdated: Date,
 });
 LocationSchema.index({ location: "2dsphere" });
-const Location = mongoose.model("Location", LocationSchema, "map"); // explicit collection name
+const Location = mongoose.model("Location", LocationSchema, "map");
 
-// -- Authentication APIs --
+// In-memory data stores for destinations
+const groupDestinations = {};
+const confirmedDestinations = {};
 
-app.post("/api/register", async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).send("Missing fields");
-  const passwordHash = await bcrypt.hash(password, 10);
-  try {
-    const user = await User.create({ username, passwordHash });
-    res.status(201).json({ message: "User created" });
-  } catch (e) {
-    res.status(400).json({ error: "Username taken" });
-  }
-});
-
-app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body;
-  const user = await User.findOne({ username });
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-  const valid = await bcrypt.compare(password, user.passwordHash);
-  if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-  const token = jwt.sign({ userId: user._id }, JWT_SECRET);
-  res.json({ token, username });
-});
-
-// JWT Auth Middleware
+// Authentication middleware
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "Unauthorized" });
@@ -86,8 +65,52 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// -- Group APIs --
+// Haversine formula to calculate distance in KM
+function haversine(lat1, lon1, lat2, lon2) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
+// ==== Authentication routes ====
+
+// Register new user
+app.post("/api/register", async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password)
+    return res.status(400).json({ error: "Missing fields" });
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  try {
+    await User.create({ username, passwordHash });
+    res.status(201).json({ message: "User created" });
+  } catch {
+    res.status(400).json({ error: "Username taken" });
+  }
+});
+
+// Login user and generate JWT
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body;
+  const user = await User.findOne({ username });
+  if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+
+  const token = jwt.sign({ userId: user._id }, JWT_SECRET);
+  res.json({ token, username });
+});
+
+// ==== Group management ====
+
+// Create group
 app.post("/api/group/create", authMiddleware, async (req, res) => {
   const { name } = req.body;
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -95,10 +118,11 @@ app.post("/api/group/create", authMiddleware, async (req, res) => {
   res.json(group);
 });
 
+// Join group by code
 app.post("/api/group/join", authMiddleware, async (req, res) => {
   const { code } = req.body;
   const group = await Group.findOne({ code });
-  if (!group) return res.status(404).send("Group not found");
+  if (!group) return res.status(404).json({ error: "Group not found" });
   if (!group.members.includes(req.userId)) {
     group.members.push(req.userId);
     await group.save();
@@ -106,17 +130,43 @@ app.post("/api/group/join", authMiddleware, async (req, res) => {
   res.json(group);
 });
 
-// -- Location APIs --
-app.get("/api/location/:groupCode", authMiddleware, async (req, res) => {
-  const { groupCode } = req.params;
-  const group = await Group.findOne({ code: groupCode });
-  if (!group) return res.status(404).send("Group not found");
+// ==== Location handling ====
 
-  const locations = await Location.find({ group: group._id })
-    .populate("user", "username");
+// Update user location and broadcast
+app.post("/api/location/update", authMiddleware, async (req, res) => {
+  const { groupId, lat, lng, speed } = req.body;
+  if (!groupId || lat === undefined || lng === undefined)
+    return res.status(400).json({ error: "Missing location data" });
 
+  const locationDoc = await Location.findOneAndUpdate(
+    { user: req.userId, group: groupId },
+    {
+      location: { type: "Point", coordinates: [lng, lat] },
+      speed,
+      lastUpdated: new Date(),
+    },
+    { upsert: true, new: true }
+  );
+
+  io.to(groupId).emit("locationUpdate", {
+    userId: req.userId,
+    lat,
+    lng,
+    speed,
+    lastUpdated: locationDoc.lastUpdated,
+  });
+
+  res.sendStatus(200);
+});
+
+// Get locations per group code
+app.get("/api/location/:code", authMiddleware, async (req, res) => {
+  const group = await Group.findOne({ code: req.params.code });
+  if (!group) return res.status(404).json({ error: "Group not found" });
+
+  const locs = await Location.find({ group: group._id }).populate("user");
   res.json(
-    locations.map((l) => ({
+    locs.map((l) => ({
       userId: l.user._id,
       username: l.user.username,
       lat: l.location.coordinates[1],
@@ -126,69 +176,108 @@ app.get("/api/location/:groupCode", authMiddleware, async (req, res) => {
   );
 });
 
-// -- Location APIs --
-app.post("/api/location/update", authMiddleware, async (req, res) => {
-  const { groupId, lat, lng, speed } = req.body;
-  console.log("[API] /api/location/update hit - payload:", { groupId, lat, lng, speed, userId: req.userId });
+// ==== Destination proposal & confirmation ====
 
+// Propose destination for group
+app.post("/api/group/set-destination", authMiddleware, (req, res) => {
+  const { groupId, lat, lng } = req.body;
   if (!groupId || lat === undefined || lng === undefined) {
-    console.log("[API] Missing data in /api/location/update");
-    return res.status(400).json({ error: "Missing location data" });
+    return res.status(400).json({ error: "Invalid destination data" });
   }
 
-  try {
-    const group = await Group.findById(groupId);
-    if (!group) {
-      console.log("[API] Group not found for ID:", groupId);
-      return res.status(404).json({ error: "Group not found" });
-    }
+  groupDestinations[groupId] = { lat, lng };
+  confirmedDestinations[groupId] = false;
 
-    const updatedLocation = await Location.findOneAndUpdate(
-      { user: req.userId, group: groupId },
-      {
-        location: { type: "Point", coordinates: [lng, lat] },
-        speed,
-        lastUpdated: new Date(),
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    ).populate("user", "username");
-
-    const userId = updatedLocation.user?._id || req.userId;
-    const username = updatedLocation.user?.username || "unknown";
-
-    console.log(`[API] Saved location for user ${username} (${userId}). Broadcasting to room: ${group.code}`);
-
-    io.to(group.code).emit("locationUpdate", {
-      userId,
-      username,
-      lat,
-      lng,
-      speed,
-      lastUpdated: updatedLocation.lastUpdated,
-    });
-
-    console.log("[API] Broadcast complete");
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("[API] Error in /api/location/update:", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
+  io.to(groupId).emit("destinationProposal", { lat, lng });
+  res.json({ message: "Destination proposed, awaiting confirmation" });
 });
 
-// -- Socket.io Real-time --
+// Confirm destination for group
+app.post("/api/group/confirm-destination", authMiddleware, (req, res) => {
+  const { groupId } = req.body;
+  if (!groupDestinations[groupId]) {
+    return res.status(400).json({ error: "No pending destination to confirm" });
+  }
+
+  confirmedDestinations[groupId] = true;
+  io.to(groupId).emit("destinationConfirmed", groupDestinations[groupId]);
+  res.json({ message: "Destination confirmed" });
+});
+
+// ==== Socket.io handling ====
+
+// On client connection
 io.on("connection", (socket) => {
-  console.log("[IO] socket connected:", socket.id);
-
-  socket.on("joinGroup", (groupCode) => {
-    console.log(`[IO] socket ${socket.id} joining room ${groupCode}`);
-    socket.join(groupCode);
-  });
-
-  socket.on("disconnect", () => {
-    console.log("[IO] socket disconnected:", socket.id);
+  socket.on("joinGroup", (groupId) => {
+    socket.join(groupId);
   });
 });
+
+// ==== Simulation Loop ====
+// Every 5 seconds, move all users toward destination for each group
+const SIM_INTERVAL_MS = 1000;
+
+setInterval(async () => {
+  for (const groupId in confirmedDestinations) {
+    if (!confirmedDestinations[groupId]) continue;
+    const dest = groupDestinations[groupId];
+    if (!dest) continue;
+
+    const friends = await Location.find({ group: groupId }).populate("user");
+    for (const friend of friends) {
+      if (!friend.location || !friend.location.coordinates) continue;
+
+      const [lng, lat] = friend.location.coordinates;
+      const speed =
+        friend.speed && friend.speed > 0
+          ? friend.speed
+          : 3 + Math.random() * 20; // Gives speeds between 3 km/h to 23 km/h
+
+      const dist = haversine(lat, lng, dest.lat, dest.lng);
+      if (dist < 0.05) {
+        // Check if user already marked arrived
+        if (friend.speed !== 0) {
+          io.to(groupId).emit("userArrived", {
+            userId: friend.user._id,
+            username: friend.user.username,
+            message: `${friend.user.username} has reached the destination!`,
+          });
+        }
+        // Update user speed to zero and location to destination
+        await Location.findByIdAndUpdate(friend._id, {
+          location: { type: "Point", coordinates: [dest.lng, dest.lat] },
+          speed: 0,
+          lastUpdated: new Date(),
+        });
+        continue;
+      }
+
+      const fraction = (speed * (SIM_INTERVAL_MS / 1000)) / 3600 / dist;
+      const newLat = lat + (dest.lat - lat) * fraction;
+      const newLng = lng + (dest.lng - lng) * fraction;
+
+      const updated = await Location.findByIdAndUpdate(
+        friend._id,
+        {
+          location: { type: "Point", coordinates: [newLng, newLat] },
+          speed,
+          lastUpdated: new Date(),
+        },
+        { new: true }
+      );
+
+      io.to(groupId).emit("locationUpdate", {
+        userId: updated.user._id,
+        username: updated.user.username,
+        lat: newLat,
+        lng: newLng,
+        speed,
+        lastUpdated: updated.lastUpdated,
+      });
+    }
+  }
+}, SIM_INTERVAL_MS);
 
 // Start server
 const PORT = 5000;
-server.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

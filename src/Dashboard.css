@@ -90,3 +90,27 @@
   height: 15px;
   border-radius: 50%;
 }
+.status-table {
+  background: white;
+  padding: 10px 15px;
+  border-radius: 8px;
+  max-width: 600px;
+  margin: 10px auto;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+.status-table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: center;
+}
+.status-table th {
+  background-color: #1976d2;
+  color: white;
+  font-weight: 600;
+  padding: 8px;
+}
+.status-table td {
+  padding: 6px;
+  border-bottom: 1px solid #ddd;
+}
