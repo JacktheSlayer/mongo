@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { fetchRoute } from "./utils/routes"; // your route fetching helper function
-import { jwtDecode } from "jwt-decode";
+import jwtDecode from "jwt-decode";
 import {
   MapContainer,
   TileLayer,
@@ -70,6 +70,9 @@ export default function Dashboard({ token, username, logout, socket }) {
   const [routeCoords, setRouteCoords] = useState([]);
   const [isSettingDestination, setIsSettingDestination] = useState(false);
 
+  // NEW: Nearby friends state
+  const [nearbyFriends, setNearbyFriends] = useState([]);
+
   function MapClickHandler({ onClick }) {
     useMapEvents({
       click(e) {
@@ -78,6 +81,7 @@ export default function Dashboard({ token, username, logout, socket }) {
     });
     return null;
   }
+
   // Assign colors to users
   useEffect(() => {
     const userIds = Object.keys(locations);
@@ -166,20 +170,12 @@ export default function Dashboard({ token, username, logout, socket }) {
       socket.off("userArrived", userArrivedHandler);
     };
   }, [socket, isJoined, groupCode, groupId, token]);
+
+
   const handleMapClick = (e) => {
-    console.log(
-      "Map clicked at",
-      e.latlng,
-      "isSettingDestination:",
-      isSettingDestination,
-      "isJoined:",
-      isJoined
-    );
-    if (!isJoined) return;
-    if (!isSettingDestination) return;
+    if (!isJoined || !isSettingDestination) return;
 
     if (window.confirm("Set this location as meeting destination?")) {
-      console.log("Confirmed destination at", e.latlng);
       fetch("http://localhost:5000/api/group/set-destination", {
         method: "POST",
         headers: {
@@ -283,8 +279,6 @@ export default function Dashboard({ token, username, logout, socket }) {
     const speed = 10 + Math.random() * 10;
     const payload = { groupId, lat, lng, speed };
 
-    console.log("Sending location update:", payload);
-
     try {
       const res = await fetch("http://localhost:5000/api/location/update", {
         method: "POST",
@@ -299,6 +293,59 @@ export default function Dashboard({ token, username, logout, socket }) {
       console.error("Error sending location update:", e);
     }
   };
+
+  // NEW: Find nearby friends
+  const findNearbyFriends = async () => {
+    const userId = getCurrentUserId();
+    const userLoc = locations[userId];
+    if (!userLoc) return alert("No location available");
+
+    try {
+      const res = await fetch(
+        `http://localhost:5000/api/friends/nearby?lat=${userLoc.lat}&lng=${userLoc.lng}&maxDistance=2000`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setNearbyFriends(data.filter((f) => f.userId !== userId)); // exclude self
+      } else {
+        alert("Failed to fetch nearby friends");
+      }
+    } catch (e) {
+      console.error("Error fetching nearby friends:", e);
+    }
+  };
+
+  const findNearestFriend = () => {
+  const myId = getCurrentUserId();
+  const myLoc = locations[myId];
+  if (!myLoc) {
+    alert("No current location found");
+    return;
+  }
+
+  let nearest = null;
+  let minDist = Infinity;
+
+  Object.values(locations).forEach((loc) => {
+    if (loc.userId === myId) return; // skip self
+    const dist = haversine(myLoc.lat, myLoc.lng, loc.lat, loc.lng);
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = loc;
+    }
+  });
+
+  if (nearest) {
+    alert(`Nearest friend: ${nearest.username} (${minDist.toFixed(2)} km away)`);
+    setMeetingPoint([nearest.lat, nearest.lng]); // highlight only nearest
+  } else {
+    alert("No friends nearby");
+  }
+};
+
 
   return (
     <div className="dashboard-container">
@@ -323,27 +370,16 @@ export default function Dashboard({ token, username, logout, socket }) {
             <h2>
               Group: {groupName} (Code: {groupCode})
             </h2>
-            <button
-              onClick={() => {
-                console.log("Send Random Location Update clicked");
-                sendLocationUpdate();
-              }}
-            >
+            <button onClick={sendLocationUpdate}>
               Send Random Location Update
             </button>
-            <button
-              onClick={() => {
-                console.log(
-                  "Toggle Set Destination clicked, was",
-                  isSettingDestination
-                );
-                setIsSettingDestination((prev) => !prev);
-              }}
-            >
+            <button onClick={() => setIsSettingDestination((prev) => !prev)}>
               {isSettingDestination
                 ? "Cancel Setting Destination"
                 : "Set Destination"}
             </button>
+            {/* NEW button */}
+            <button onClick={findNearestFriend}>Find Nearest Friend</button>
           </div>
 
           {/* Status Table */}
@@ -373,7 +409,6 @@ export default function Dashboard({ token, username, logout, socket }) {
                         )} min`
                       : "N/A";
 
-                  // Calculate badge color based on speed
                   let speedColor = "grey";
                   if (speed > 15) speedColor = "green";
                   else if (speed > 7) speedColor = "orange";
@@ -412,7 +447,6 @@ export default function Dashboard({ token, username, logout, socket }) {
               center={[9.925, 78.12]}
               zoom={13}
               style={{ height: "60vh", width: "100%" }}
-              // Map click handler separated for clarity
               onClick={handleMapClick}
             >
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -439,6 +473,20 @@ export default function Dashboard({ token, username, logout, socket }) {
                 </Marker>
               )}
               {routeCoords.length > 0 && <Polyline positions={routeCoords} />}
+              {/* NEW Nearby Friends */}
+              {nearbyFriends.map((friend) => (
+                <Marker
+                  key={friend.userId}
+                  position={[friend.lat, friend.lng]}
+                  icon={createColoredIcon("violet")}
+                >
+                  <Popup>
+                    <b>{friend.username}</b>
+                    <br />
+                    Nearby within 2 km
+                  </Popup>
+                </Marker>
+              ))}
             </MapContainer>
           </div>
         </>

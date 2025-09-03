@@ -159,6 +159,43 @@ app.post("/api/location/update", authMiddleware, async (req, res) => {
   res.sendStatus(200);
 });
 
+// -- Find Nearby Friends API --
+app.get("/api/friends/nearby", authMiddleware, async (req, res) => {
+  const { lat, lng, maxDistance } = req.query;
+
+  if (!lat || !lng) {
+    return res.status(400).json({ error: "lat and lng required" });
+  }
+
+  try {
+    const nearby = await Location.find({
+      location: {
+        $near: {
+          $geometry: {
+            type: "Point",
+            coordinates: [parseFloat(lng), parseFloat(lat)],
+          },
+          $maxDistance: parseInt(maxDistance) || 2000, // meters (default 2km)
+        },
+      },
+    }).populate("user", "username");
+
+    res.json(
+      nearby.map((l) => ({
+        userId: l.user._id,
+        username: l.user.username,
+        lat: l.location.coordinates[1],
+        lng: l.location.coordinates[0],
+        speed: l.speed,
+      }))
+    );
+  } catch (err) {
+    console.error("Error finding nearby friends:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
 // Get locations per group code
 app.get("/api/location/:code", authMiddleware, async (req, res) => {
   const group = await Group.findOne({ code: req.params.code });
@@ -175,6 +212,41 @@ app.get("/api/location/:code", authMiddleware, async (req, res) => {
     }))
   );
 });
+
+// Find nearest member to given coordinates
+app.get("/api/group/:code/nearest", authMiddleware, async (req, res) => {
+  const { lat, lng } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "Missing lat/lng" });
+
+  const group = await Group.findOne({ code: req.params.code });
+  if (!group) return res.status(404).send("Group not found");
+
+  try {
+    const nearest = await Location.findOne({
+      group: group._id,
+      location: {
+        $near: {
+          $geometry: { type: "Point", coordinates: [parseFloat(lng), parseFloat(lat)] },
+          $maxDistance: 5000 // 5 km radius
+        }
+      }
+    }).populate("user", "username");
+
+    if (!nearest) return res.status(404).json({ error: "No nearby members found" });
+
+    res.json({
+      userId: nearest.user._id,
+      username: nearest.user.username,
+      lat: nearest.location.coordinates[1],
+      lng: nearest.location.coordinates[0],
+      speed: nearest.speed
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 // ==== Destination proposal & confirmation ====
 
