@@ -17,13 +17,13 @@ const io = socketIo(server, { cors: { origin: "*" } });
 app.use(cors());
 app.use(express.json());
 
-// MongoDB connection
-mongoose.connect("mongodb://localhost:27017/maps", {
+// ===== MongoDB connection (branch2 style) =====
+mongoose.connect("mongodb://localhost:27017/mydatabase", {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
 
-// MongoDB Schemas and Models
+// ===== MongoDB Schemas and Models =====
 const UserSchema = new mongoose.Schema({
   username: { type: String, unique: true },
   passwordHash: String,
@@ -34,6 +34,7 @@ const GroupSchema = new mongoose.Schema({
   name: String,
   code: { type: String, unique: true },
   members: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  geofenceRadiusKm: { type: Number, default: 1 }, // from branch1
 });
 const Group = mongoose.model("Group", GroupSchema);
 
@@ -42,7 +43,7 @@ const LocationSchema = new mongoose.Schema({
   group: { type: mongoose.Schema.Types.ObjectId, ref: "Group" },
   location: {
     type: { type: String, enum: ["Point"], required: true },
-    coordinates: { type: [Number], required: true },
+    coordinates: { type: [Number], required: true }, // [lng, lat]
   },
   speed: Number,
   lastUpdated: Date,
@@ -50,11 +51,11 @@ const LocationSchema = new mongoose.Schema({
 LocationSchema.index({ location: "2dsphere" });
 const Location = mongoose.model("Location", LocationSchema, "map");
 
-// In-memory data stores for destinations
+// In-memory data stores
 const groupDestinations = {};
 const confirmedDestinations = {};
 
-// Authentication middleware
+// ===== Authentication middleware =====
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "Unauthorized" });
@@ -65,7 +66,7 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// Haversine formula to calculate distance in KM
+// Haversine formula (branch1 + branch2 use)
 function haversine(lat1, lon1, lat2, lon2) {
   const toRad = (v) => (v * Math.PI) / 180;
   const R = 6371;
@@ -78,9 +79,7 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// ==== Authentication routes ====
-
-// Register new user
+// ===== Authentication routes =====
 app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password)
@@ -95,7 +94,6 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// Login user and generate JWT
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   const user = await User.findOne({ username });
@@ -108,9 +106,7 @@ app.post("/api/login", async (req, res) => {
   res.json({ token, username });
 });
 
-// ==== Group management ====
-
-// Create group
+// ===== Group management =====
 app.post("/api/group/create", authMiddleware, async (req, res) => {
   const { name } = req.body;
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -118,7 +114,6 @@ app.post("/api/group/create", authMiddleware, async (req, res) => {
   res.json(group);
 });
 
-// Join group by code
 app.post("/api/group/join", authMiddleware, async (req, res) => {
   const { code } = req.body;
   const group = await Group.findOne({ code });
@@ -130,13 +125,30 @@ app.post("/api/group/join", authMiddleware, async (req, res) => {
   res.json(group);
 });
 
-// ==== Location handling ====
+// Set geofence radius (branch1)
+app.post("/api/group/geofence-radius", authMiddleware, async (req, res) => {
+  const { groupId, radiusKm } = req.body;
+  if (!groupId || !radiusKm)
+    return res.status(400).json({ error: "Missing fields" });
 
-// Update user location and broadcast
+  const group = await Group.findByIdAndUpdate(
+    groupId,
+    { geofenceRadiusKm: radiusKm },
+    { new: true }
+  );
+  if (!group) return res.status(404).json({ error: "Group not found" });
+
+  res.json({ message: `Geofence radius set to ${radiusKm} km`, radiusKm });
+});
+
+// ===== Location handling =====
 app.post("/api/location/update", authMiddleware, async (req, res) => {
   const { groupId, lat, lng, speed } = req.body;
   if (!groupId || lat === undefined || lng === undefined)
     return res.status(400).json({ error: "Missing location data" });
+
+  const group = await Group.findById(groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
 
   const locationDoc = await Location.findOneAndUpdate(
     { user: req.userId, group: groupId },
@@ -146,26 +158,50 @@ app.post("/api/location/update", authMiddleware, async (req, res) => {
       lastUpdated: new Date(),
     },
     { upsert: true, new: true }
-  );
+  ).populate("user", "username");
 
   io.to(groupId).emit("locationUpdate", {
     userId: req.userId,
+    username: locationDoc.user?.username,
     lat,
     lng,
     speed,
     lastUpdated: locationDoc.lastUpdated,
   });
 
+  // Geofence check (branch1)
+  const radiusKm = group.geofenceRadiusKm || 1;
+  const radiusRad = radiusKm / 6371;
+
+  const nearbyFriends = await Location.find({
+    group: groupId,
+    user: { $ne: req.userId },
+    location: {
+      $geoWithin: {
+        $centerSphere: [[lng, lat], radiusRad],
+      },
+    },
+  }).populate("user", "username");
+
+  if (nearbyFriends.length > 0) {
+    nearbyFriends.forEach((f) => {
+      io.to(groupId).emit("geofenceAlert", {
+        userId: f.user._id,
+        username: f.user.username,
+        lat: f.location.coordinates[1],
+        lng: f.location.coordinates[0],
+        message: `${f.user.username} is within ${radiusKm} km!`,
+      });
+    });
+  }
+
   res.sendStatus(200);
 });
 
-// -- Find Nearby Friends API --
+// Nearby friends API (branch2)
 app.get("/api/friends/nearby", authMiddleware, async (req, res) => {
   const { lat, lng, maxDistance } = req.query;
-
-  if (!lat || !lng) {
-    return res.status(400).json({ error: "lat and lng required" });
-  }
+  if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
 
   try {
     const nearby = await Location.find({
@@ -175,7 +211,7 @@ app.get("/api/friends/nearby", authMiddleware, async (req, res) => {
             type: "Point",
             coordinates: [parseFloat(lng), parseFloat(lat)],
           },
-          $maxDistance: parseInt(maxDistance) || 2000, // meters (default 2km)
+          $maxDistance: parseInt(maxDistance) || 2000,
         },
       },
     }).populate("user", "username");
@@ -195,8 +231,41 @@ app.get("/api/friends/nearby", authMiddleware, async (req, res) => {
   }
 });
 
+// Nearest member API (branch2)
+app.get("/api/group/:code/nearest", authMiddleware, async (req, res) => {
+  const { lat, lng } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: "Missing lat/lng" });
 
-// Get locations per group code
+  const group = await Group.findOne({ code: req.params.code });
+  if (!group) return res.status(404).send("Group not found");
+
+  try {
+    const nearest = await Location.findOne({
+      group: group._id,
+      location: {
+        $near: {
+          $geometry: { type: "Point", coordinates: [parseFloat(lng), parseFloat(lat)] },
+          $maxDistance: 5000,
+        },
+      },
+    }).populate("user", "username");
+
+    if (!nearest) return res.status(404).json({ error: "No nearby members found" });
+
+    res.json({
+      userId: nearest.user._id,
+      username: nearest.user.username,
+      lat: nearest.location.coordinates[1],
+      lng: nearest.location.coordinates[0],
+      speed: nearest.speed,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Get all locations (branch1 + branch2)
 app.get("/api/location/:code", authMiddleware, async (req, res) => {
   const group = await Group.findOne({ code: req.params.code });
   if (!group) return res.status(404).json({ error: "Group not found" });
@@ -213,44 +282,7 @@ app.get("/api/location/:code", authMiddleware, async (req, res) => {
   );
 });
 
-// Find nearest member to given coordinates
-app.get("/api/group/:code/nearest", authMiddleware, async (req, res) => {
-  const { lat, lng } = req.query;
-  if (!lat || !lng) return res.status(400).json({ error: "Missing lat/lng" });
-
-  const group = await Group.findOne({ code: req.params.code });
-  if (!group) return res.status(404).send("Group not found");
-
-  try {
-    const nearest = await Location.findOne({
-      group: group._id,
-      location: {
-        $near: {
-          $geometry: { type: "Point", coordinates: [parseFloat(lng), parseFloat(lat)] },
-          $maxDistance: 5000 // 5 km radius
-        }
-      }
-    }).populate("user", "username");
-
-    if (!nearest) return res.status(404).json({ error: "No nearby members found" });
-
-    res.json({
-      userId: nearest.user._id,
-      username: nearest.user.username,
-      lat: nearest.location.coordinates[1],
-      lng: nearest.location.coordinates[0],
-      speed: nearest.speed
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-
-// ==== Destination proposal & confirmation ====
-
-// Propose destination for group
+// ===== Destination proposal & confirmation =====
 app.post("/api/group/set-destination", authMiddleware, (req, res) => {
   const { groupId, lat, lng } = req.body;
   if (!groupId || lat === undefined || lng === undefined) {
@@ -264,7 +296,6 @@ app.post("/api/group/set-destination", authMiddleware, (req, res) => {
   res.json({ message: "Destination proposed, awaiting confirmation" });
 });
 
-// Confirm destination for group
 app.post("/api/group/confirm-destination", authMiddleware, (req, res) => {
   const { groupId } = req.body;
   if (!groupDestinations[groupId]) {
@@ -276,19 +307,15 @@ app.post("/api/group/confirm-destination", authMiddleware, (req, res) => {
   res.json({ message: "Destination confirmed" });
 });
 
-// ==== Socket.io handling ====
-
-// On client connection
+// ===== Socket.io handling =====
 io.on("connection", (socket) => {
   socket.on("joinGroup", (groupId) => {
     socket.join(groupId);
   });
 });
 
-// ==== Simulation Loop ====
-// Every 5 seconds, move all users toward destination for each group
+// ===== Simulation loop =====
 const SIM_INTERVAL_MS = 1000;
-
 setInterval(async () => {
   for (const groupId in confirmedDestinations) {
     if (!confirmedDestinations[groupId]) continue;
@@ -301,13 +328,10 @@ setInterval(async () => {
 
       const [lng, lat] = friend.location.coordinates;
       const speed =
-        friend.speed && friend.speed > 0
-          ? friend.speed
-          : 3 + Math.random() * 20; // Gives speeds between 3 km/h to 23 km/h
+        friend.speed && friend.speed > 0 ? friend.speed : 3 + Math.random() * 20;
 
       const dist = haversine(lat, lng, dest.lat, dest.lng);
       if (dist < 0.05) {
-        // Check if user already marked arrived
         if (friend.speed !== 0) {
           io.to(groupId).emit("userArrived", {
             userId: friend.user._id,
@@ -315,7 +339,6 @@ setInterval(async () => {
             message: `${friend.user.username} has reached the destination!`,
           });
         }
-        // Update user speed to zero and location to destination
         await Location.findByIdAndUpdate(friend._id, {
           location: { type: "Point", coordinates: [dest.lng, dest.lat] },
           speed: 0,
@@ -350,6 +373,6 @@ setInterval(async () => {
   }
 }, SIM_INTERVAL_MS);
 
-// Start server
+// ===== Start server =====
 const PORT = 5000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { fetchRoute } from "./utils/routes"; // your route fetching helper function
+import { fetchRoute } from "./utils/routes";
 import jwtDecode from "jwt-decode";
 import {
   MapContainer,
@@ -7,12 +7,14 @@ import {
   Marker,
   Popup,
   Polyline,
+  Circle,
+  useMapEvents,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import "./Dashboard.css";
-import { useMapEvents } from "react-leaflet";
 
+// Function to create a colored marker
 const createColoredIcon = (color) =>
   new L.Icon({
     iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
@@ -24,20 +26,24 @@ const createColoredIcon = (color) =>
     shadowSize: [41, 41],
   });
 
-const COLORS = [
-  "red",
-  "blue",
-  "green",
-  "orange",
-  "yellow",
-  "violet",
-  "grey",
-  "black",
-];
+// Special icon for geofence alert
+const geofenceIcon = new L.Icon({
+  iconUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png",
+  shadowUrl:
+    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png",
+  iconSize: [30, 45],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
 
+const COLORS = ["red", "blue", "green", "orange", "yellow", "violet", "grey", "black"];
+
+// Haversine formula to calculate distance between two coordinates
 const haversine = (lat1, lng1, lat2, lng2) => {
   const toRad = (v) => (v * Math.PI) / 180;
-  const R = 6371;
+  const R = 6371; // km
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lng2 - lng1);
   const a =
@@ -47,6 +53,7 @@ const haversine = (lat1, lng1, lat2, lng2) => {
   return R * c;
 };
 
+// Extract user ID from token
 function getCurrentUserId() {
   const token = localStorage.getItem("token");
   if (!token) return null;
@@ -66,13 +73,14 @@ export default function Dashboard({ token, username, logout, socket }) {
   const [locations, setLocations] = useState({});
   const [userColors, setUserColors] = useState({});
   const [meetingPoint, setMeetingPoint] = useState(null);
-  const [destinationProposed, setDestinationProposed] = useState(false);
   const [routeCoords, setRouteCoords] = useState([]);
   const [isSettingDestination, setIsSettingDestination] = useState(false);
+  const [destinationProposed, setDestinationProposed] = useState(false);
 
-  // NEW: Nearby friends state
-  const [nearbyFriends, setNearbyFriends] = useState([]);
+  const [geofenceUsers, setGeofenceUsers] = useState(new Set());
+  const [geofenceRadius, setGeofenceRadius] = useState(1);
 
+  // Map click handler component
   function MapClickHandler({ onClick }) {
     useMapEvents({
       click(e) {
@@ -82,7 +90,7 @@ export default function Dashboard({ token, username, logout, socket }) {
     return null;
   }
 
-  // Assign colors to users
+  // Assign a unique color to each user
   useEffect(() => {
     const userIds = Object.keys(locations);
     setUserColors((prev) => {
@@ -100,32 +108,56 @@ export default function Dashboard({ token, username, logout, socket }) {
 
   const getUserColor = (userId) => userColors[userId] || "red";
 
-  // Fetch route whenever the meeting point or current user changes
+  // Determine readable text color
+  const getTextColor = (bgColor) => {
+    const lightColors = ["yellow", "orange"];
+    return lightColors.includes(bgColor) ? "black" : "white";
+  };
+
+  // Fetch route when meeting point changes
   useEffect(() => {
     const tokenUserId = getCurrentUserId();
     if (!meetingPoint || !locations[tokenUserId]) return;
-
     const userLoc = locations[tokenUserId];
-    if (!userLoc) return;
-
     const start = { lat: userLoc.lat, lng: userLoc.lng };
     const end = { lat: meetingPoint[0], lng: meetingPoint[1] };
     fetchRoute(start, end)
       .then((coords) => setRouteCoords(coords))
-      .catch((err) => {
-        console.error("Error fetching route:", err);
-        setRouteCoords([]);
-      });
+      .catch(() => setRouteCoords([]));
   }, [meetingPoint, locations]);
 
-  // Socket event handlers and join room
+  // Socket event handlers
   useEffect(() => {
     if (!socket || !isJoined || !groupCode) return;
 
     socket.emit("joinGroup", groupId);
 
     const locationHandler = (loc) => {
-      setLocations((prev) => ({ ...prev, [loc.userId]: loc }));
+      // Preserve username during updates
+      setLocations((prev) => ({
+        ...prev,
+        [loc.userId]: { ...prev[loc.userId], ...loc },
+      }));
+      if (geofenceUsers.has(loc.userId)) {
+        const dist = haversine(
+          loc.lat,
+          loc.lng,
+          locations[getCurrentUserId()]?.lat || loc.lat,
+          locations[getCurrentUserId()]?.lng || loc.lng
+        );
+        if (dist > geofenceRadius) {
+          setGeofenceUsers((prev) => {
+            const updated = new Set(prev);
+            updated.delete(loc.userId);
+            return updated;
+          });
+        }
+      }
+    };
+
+    const geofenceHandler = (alert) => {
+      setGeofenceUsers((prev) => new Set(prev).add(alert.userId));
+      alert.message && window.alert(alert.message);
     };
 
     const destProposalHandler = (dest) => {
@@ -142,9 +174,7 @@ export default function Dashboard({ token, username, logout, socket }) {
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ groupId }),
-        }).then((res) =>
-          console.log("Confirmed destination response:", res.status)
-        );
+        });
       }
       setDestinationProposed(true);
     };
@@ -159,22 +189,32 @@ export default function Dashboard({ token, username, logout, socket }) {
     };
 
     socket.on("locationUpdate", locationHandler);
+    socket.on("geofenceAlert", geofenceHandler);
     socket.on("destinationProposal", destProposalHandler);
     socket.on("destinationConfirmed", destConfirmedHandler);
     socket.on("userArrived", userArrivedHandler);
 
     return () => {
       socket.off("locationUpdate", locationHandler);
+      socket.off("geofenceAlert", geofenceHandler);
       socket.off("destinationProposal", destProposalHandler);
       socket.off("destinationConfirmed", destConfirmedHandler);
       socket.off("userArrived", userArrivedHandler);
     };
-  }, [socket, isJoined, groupCode, groupId, token]);
+  }, [
+    socket,
+    isJoined,
+    groupCode,
+    groupId,
+    geofenceUsers,
+    locations,
+    geofenceRadius,
+    token,
+  ]);
 
-
+  // Handle map click for setting destination
   const handleMapClick = (e) => {
     if (!isJoined || !isSettingDestination) return;
-
     if (window.confirm("Set this location as meeting destination?")) {
       fetch("http://localhost:5000/api/group/set-destination", {
         method: "POST",
@@ -187,12 +227,12 @@ export default function Dashboard({ token, username, logout, socket }) {
           lat: e.latlng.lat,
           lng: e.latlng.lng,
         }),
-      }).then((res) => console.log("Destination set response:", res.status));
+      });
       setIsSettingDestination(false);
     }
   };
 
-  // Fetch initial locations when user joins or creates group
+  // Fetch initial locations
   const fetchInitialLocations = async (code) => {
     try {
       const res = await fetch(`http://localhost:5000/api/location/${code}`, {
@@ -212,7 +252,6 @@ export default function Dashboard({ token, username, logout, socket }) {
     }
   };
 
-  // Join group
   const joinGroup = async () => {
     if (!groupCode) return alert("Enter group code");
     try {
@@ -224,22 +263,18 @@ export default function Dashboard({ token, username, logout, socket }) {
         },
         body: JSON.stringify({ code: groupCode }),
       });
-
       if (res.ok) {
         const group = await res.json();
         setGroupName(group.name);
         setGroupId(group._id);
         setIsJoined(true);
         await fetchInitialLocations(group.code);
-      } else {
-        alert("Failed to join group");
-      }
-    } catch (e) {
+      } else alert("Failed to join group");
+    } catch {
       alert("Failed to join group");
     }
   };
 
-  // Create group
   const createGroup = async () => {
     const name = prompt("Enter group name");
     if (!name) return;
@@ -252,7 +287,6 @@ export default function Dashboard({ token, username, logout, socket }) {
         },
         body: JSON.stringify({ name }),
       });
-
       if (res.ok) {
         const group = await res.json();
         setGroupCode(group.code);
@@ -260,27 +294,20 @@ export default function Dashboard({ token, username, logout, socket }) {
         setGroupName(group.name);
         setIsJoined(true);
         await fetchInitialLocations(group.code);
-      } else {
-        alert("Failed to create group");
-      }
-    } catch (e) {
+      } else alert("Failed to create group");
+    } catch {
       alert("Failed to create group");
     }
   };
 
-  // Send random location update
   const sendLocationUpdate = async () => {
-    if (!isJoined) {
-      alert("Join a group first");
-      return;
-    }
+    if (!isJoined) return alert("Join a group first");
     const lat = 9.925 + Math.random() * 0.01;
     const lng = 78.12 + Math.random() * 0.01;
     const speed = 10 + Math.random() * 10;
     const payload = { groupId, lat, lng, speed };
-
     try {
-      const res = await fetch("http://localhost:5000/api/location/update", {
+      await fetch("http://localhost:5000/api/location/update", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -288,64 +315,48 @@ export default function Dashboard({ token, username, logout, socket }) {
         },
         body: JSON.stringify(payload),
       });
-      console.log("Location update response status:", res.status);
     } catch (e) {
       console.error("Error sending location update:", e);
     }
   };
 
-  // NEW: Find nearby friends
-  const findNearbyFriends = async () => {
-    const userId = getCurrentUserId();
-    const userLoc = locations[userId];
-    if (!userLoc) return alert("No location available");
-
+  const handleRadiusChange = async (newRadius) => {
+    setGeofenceRadius(newRadius);
+    if (!groupId) return;
     try {
-      const res = await fetch(
-        `http://localhost:5000/api/friends/nearby?lat=${userLoc.lat}&lng=${userLoc.lng}&maxDistance=2000`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        setNearbyFriends(data.filter((f) => f.userId !== userId)); // exclude self
-      } else {
-        alert("Failed to fetch nearby friends");
-      }
+      await fetch("http://localhost:5000/api/group/geofence-radius", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ groupId, radiusKm: newRadius }),
+      });
     } catch (e) {
-      console.error("Error fetching nearby friends:", e);
+      console.error("Failed to update geofence radius:", e);
     }
   };
 
+  // Fixed nearest friend logic
   const findNearestFriend = () => {
-  const myId = getCurrentUserId();
-  const myLoc = locations[myId];
-  if (!myLoc) {
-    alert("No current location found");
-    return;
-  }
-
-  let nearest = null;
-  let minDist = Infinity;
-
-  Object.values(locations).forEach((loc) => {
-    if (loc.userId === myId) return; // skip self
-    const dist = haversine(myLoc.lat, myLoc.lng, loc.lat, loc.lng);
-    if (dist < minDist) {
-      minDist = dist;
-      nearest = loc;
-    }
-  });
-
-  if (nearest) {
-    alert(`Nearest friend: ${nearest.username} (${minDist.toFixed(2)} km away)`);
-    setMeetingPoint([nearest.lat, nearest.lng]); // highlight only nearest
-  } else {
-    alert("No friends nearby");
-  }
-};
-
+    const myId = getCurrentUserId();
+    const myLoc = locations[myId];
+    if (!myLoc) return alert("No current location found");
+    let nearest = null;
+    let minDist = Infinity;
+    Object.values(locations).forEach((loc) => {
+      if (loc.userId === myId) return; // exclude self
+      const dist = haversine(myLoc.lat, myLoc.lng, loc.lat, loc.lng);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = loc;
+      }
+    });
+    if (nearest) {
+      alert(`Nearest friend: ${nearest.username} (${minDist.toFixed(2)} km away)`);
+      setMeetingPoint([nearest.lat, nearest.lng]); // update locally
+    } else alert("No friends nearby");
+  };
 
   return (
     <div className="dashboard-container">
@@ -370,19 +381,27 @@ export default function Dashboard({ token, username, logout, socket }) {
             <h2>
               Group: {groupName} (Code: {groupCode})
             </h2>
-            <button onClick={sendLocationUpdate}>
-              Send Random Location Update
+            <button onClick={sendLocationUpdate}>Send Random Location Update</button>
+            <button onClick={() => setIsSettingDestination((p) => !p)}>
+              {isSettingDestination ? "Cancel Setting Destination" : "Set Destination"}
             </button>
-            <button onClick={() => setIsSettingDestination((prev) => !prev)}>
-              {isSettingDestination
-                ? "Cancel Setting Destination"
-                : "Set Destination"}
-            </button>
-            {/* NEW button */}
             <button onClick={findNearestFriend}>Find Nearest Friend</button>
           </div>
 
-          {/* Status Table */}
+          <div className="geofence-control">
+            <label>
+              Geofence Radius: {geofenceRadius} km
+              <input
+                type="range"
+                min="0.5"
+                max="10"
+                step="0.5"
+                value={geofenceRadius}
+                onChange={(e) => handleRadiusChange(parseFloat(e.target.value))}
+              />
+            </label>
+          </div>
+
           <div className="status-table">
             <table>
               <thead>
@@ -398,37 +417,19 @@ export default function Dashboard({ token, username, logout, socket }) {
                   const eta =
                     meetingPoint && speed > 0
                       ? `${Math.round(
-                          (haversine(
-                            loc.lat,
-                            loc.lng,
-                            meetingPoint[0],
-                            meetingPoint[1]
-                          ) /
-                            speed) *
+                          (haversine(loc.lat, loc.lng, meetingPoint[0], meetingPoint[1]) / speed) *
                             60
                         )} min`
                       : "N/A";
-
-                  let speedColor = "grey";
-                  if (speed > 15) speedColor = "green";
-                  else if (speed > 7) speedColor = "orange";
-                  else if (speed > 0) speedColor = "red";
-
+                  const color = getUserColor(loc.userId);
+                  const textColor = getTextColor(color);
                   return (
                     <tr key={loc.userId}>
                       <td>{loc.username}</td>
                       <td>
                         <span
-                          style={{
-                            display: "inline-block",
-                            width: "40px",
-                            padding: "2px 6px",
-                            borderRadius: "12px",
-                            backgroundColor: speedColor,
-                            color: "white",
-                            textAlign: "center",
-                            fontWeight: "bold",
-                          }}
+                          className={`speed-badge speed-${color}`}
+                          style={{ color: textColor }}
                         >
                           {speed.toFixed(1)} km/h
                         </span>
@@ -441,7 +442,6 @@ export default function Dashboard({ token, username, logout, socket }) {
             </table>
           </div>
 
-          {/* Map */}
           <div className="map-container">
             <MapContainer
               center={[9.925, 78.12]}
@@ -451,42 +451,44 @@ export default function Dashboard({ token, username, logout, socket }) {
             >
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
               <MapClickHandler onClick={handleMapClick} />
+
               {Object.values(locations).map((loc) => {
+                const isAlerted = geofenceUsers.has(loc.userId);
                 const color = getUserColor(loc.userId);
                 return (
-                  <Marker
-                    key={loc.userId}
-                    position={[loc.lat, loc.lng]}
-                    icon={createColoredIcon(color)}
-                  >
-                    <Popup>
-                      <b>{loc.username}</b>
-                      <br />
-                      Speed: {loc.speed?.toFixed(1) || "0"} km/h
-                    </Popup>
-                  </Marker>
+                  <React.Fragment key={loc.userId}>
+                    <Marker
+                      position={[loc.lat, loc.lng]}
+                      icon={isAlerted ? geofenceIcon : createColoredIcon(color)}
+                    >
+                      <Popup>
+                        <b>{loc.username}</b>
+                        <br />
+                        Speed: {loc.speed?.toFixed(1) || "0"} km/h
+                        {isAlerted && (
+                          <div style={{ color: "red" }}>
+                            ⚠ Within {geofenceRadius} km!
+                          </div>
+                        )}
+                      </Popup>
+                    </Marker>
+                    {isAlerted && (
+                      <Circle
+                        center={[loc.lat, loc.lng]}
+                        radius={geofenceRadius * 1000}
+                        pathOptions={{ color: "gold", fillOpacity: 0.1 }}
+                      />
+                    )}
+                  </React.Fragment>
                 );
               })}
+
               {meetingPoint && (
                 <Marker position={meetingPoint}>
                   <Popup>Meeting Point</Popup>
                 </Marker>
               )}
               {routeCoords.length > 0 && <Polyline positions={routeCoords} />}
-              {/* NEW Nearby Friends */}
-              {nearbyFriends.map((friend) => (
-                <Marker
-                  key={friend.userId}
-                  position={[friend.lat, friend.lng]}
-                  icon={createColoredIcon("violet")}
-                >
-                  <Popup>
-                    <b>{friend.username}</b>
-                    <br />
-                    Nearby within 2 km
-                  </Popup>
-                </Marker>
-              ))}
             </MapContainer>
           </div>
         </>

@@ -1,3 +1,4 @@
+/* Container & general layout */
 .dashboard-container {
   padding: 20px;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
@@ -32,6 +33,7 @@
   background: #d43f4f;
 }
 
+/* Group section & buttons */
 .group-section {
   display: flex;
   gap: 10px;
@@ -56,6 +58,7 @@
 
 .group-info {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 15px;
@@ -78,6 +81,7 @@
   font-weight: bold;
 }
 
+/* Status Table */
 .status-table {
   background: white;
   padding: 12px 16px;
@@ -85,6 +89,7 @@
   max-width: 700px;
   margin: 15px auto;
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+  font-family: inherit;
 }
 
 .status-table table {
@@ -106,9 +111,43 @@
   border-bottom: 1px solid #ddd;
 }
 
+/* Speed badges */
+.speed-badge {
+  display: inline-block;
+  width: 50px;
+  padding: 4px 6px;
+  border-radius: 12px;
+  color: white;
+  text-align: center;
+  font-weight: bold;
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Default speed badge colors (will be overridden inline in React) */
+.speed-red { background-color: red; }
+.speed-blue { background-color: blue; }
+.speed-green { background-color: green; }
+.speed-orange { background-color: orange; }
+.speed-yellow { background-color: yellow; color: black; }
+.speed-violet { background-color: violet; }
+.speed-grey { background-color: grey; }
+.speed-black { background-color: black; }
+
+/* Map container */
 .map-container {
   margin-top: 20px;
   border-radius: 10px;
   overflow: hidden;
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
+  height: 60vh;
+  width: 100%;
+}
+
+/* Popup styling */
+.leaflet-popup-content b {
+  font-size: 1em;
+  color: #333;
 }
