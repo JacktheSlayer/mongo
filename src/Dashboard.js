@@ -108,7 +108,6 @@ export default function Dashboard({ token, username, logout, socket }) {
 
   const getUserColor = (userId) => userColors[userId] || "red";
 
-  // Determine readable text color
   const getTextColor = (bgColor) => {
     const lightColors = ["yellow", "orange"];
     return lightColors.includes(bgColor) ? "black" : "white";
@@ -133,7 +132,6 @@ export default function Dashboard({ token, username, logout, socket }) {
     socket.emit("joinGroup", groupId);
 
     const locationHandler = (loc) => {
-      // Preserve username during updates
       setLocations((prev) => ({
         ...prev,
         [loc.userId]: { ...prev[loc.userId], ...loc },
@@ -212,7 +210,6 @@ export default function Dashboard({ token, username, logout, socket }) {
     token,
   ]);
 
-  // Handle map click for setting destination
   const handleMapClick = (e) => {
     if (!isJoined || !isSettingDestination) return;
     if (window.confirm("Set this location as meeting destination?")) {
@@ -232,7 +229,6 @@ export default function Dashboard({ token, username, logout, socket }) {
     }
   };
 
-  // Fetch initial locations
   const fetchInitialLocations = async (code) => {
     try {
       const res = await fetch(`http://localhost:5000/api/location/${code}`, {
@@ -337,7 +333,6 @@ export default function Dashboard({ token, username, logout, socket }) {
     }
   };
 
-  // Fixed nearest friend logic
   const findNearestFriend = () => {
     const myId = getCurrentUserId();
     const myLoc = locations[myId];
@@ -345,7 +340,7 @@ export default function Dashboard({ token, username, logout, socket }) {
     let nearest = null;
     let minDist = Infinity;
     Object.values(locations).forEach((loc) => {
-      if (loc.userId === myId) return; // exclude self
+      if (loc.userId === myId) return;
       const dist = haversine(myLoc.lat, myLoc.lng, loc.lat, loc.lng);
       if (dist < minDist) {
         minDist = dist;
@@ -354,7 +349,7 @@ export default function Dashboard({ token, username, logout, socket }) {
     });
     if (nearest) {
       alert(`Nearest friend: ${nearest.username} (${minDist.toFixed(2)} km away)`);
-      setMeetingPoint([nearest.lat, nearest.lng]); // update locally
+      setMeetingPoint([nearest.lat, nearest.lng]);
     } else alert("No friends nearby");
   };
 
